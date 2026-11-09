@@ -2,7 +2,23 @@ import json
 import requests
 import uuid
 from time import sleep
-from fastchat.model import get_conversation_template
+
+
+# FastChat is only needed for the legacy conversation-template path (i.e. when
+# gen_res.py / gen_po_multi_res.py run WITHOUT --use_tokenizer_template). It has no
+# wheel in the Compute Canada wheelhouse, so importing it eagerly made every module
+# that touches utils.py unimportable on that cluster. Resolve it on first use
+# instead; callers that pass --use_tokenizer_template never trigger this.
+def get_conversation_template(*args, **kwargs):
+    try:
+        from fastchat.model import get_conversation_template as _get
+    except ImportError as e:
+        raise ImportError(
+            "fastchat (fschat) is not installed, so FastChat conversation templates "
+            "are unavailable. Pass --use_tokenizer_template to use the model's own "
+            "chat template instead, or `pip install fschat`."
+        ) from e
+    return _get(*args, **kwargs)
 
 # File I/O utilities
 def load_jsonl_to_list(jsonl_file_path):

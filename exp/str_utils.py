@@ -198,7 +198,89 @@ def remove_prefix(string):
     return string
 
 
+# --- Qwen3.5 / Qwen3.6 sanitizer -------------------------------------------------------
+# These models will not role-play the user unprompted: fed a bare pre-query template they
+# emit EOS as the FIRST token ~91% of the time (measured, job 418055), and ~100% of the
+# time when a system prompt is present. gen_ins.py must therefore force generation with
+# --min_tokens, and what comes back needs trimming, because past the forced tokens the
+# model reliably does one of three things:
+#   1. flips role and answers itself, usually via a <think> block  (54% of generations)
+#   2. collapses into repetition -- largely cured at the source by --presence_penalty 1.5,
+#      which took heavy repetition from 7.1% to 0.8%
+#   3. stacks several separate queries separated by blank lines
+# Measured yield of the rules below on 240 real generations (job 418106): 85.8% kept, and
+# 100% of what is kept ends on a sentence boundary (vs 22.9% before trimming).
+QWEN3_ROLE_MARKERS = re.compile(
+    r'<think>|</think>'
+    # Literal chat-template markers. These arrive as TEXT, not as the special token ids,
+    # so neither stop_token_ids nor skip_special_tokens removes them -- one slipped
+    # through into the 12k pilot as '...correctly.<|im_end|>  <|user|> This is ...'.
+    r'|<\|im_end\|>|<\|im_start\|>|<\|endoftext\|>|<\|user\|>|<\|assistant\|>'
+    r'|\n\s*Assistant\s*:|\n\s*assistant\b', re.IGNORECASE)
+QWEN3_SENTENCE_SPLIT = re.compile(r'(?<=[.?!。？！])\s')
+TERMINAL_PUNCTUATION = '.?!。？！'
+
+
+def repetition_ratio(text, shingle=6):
+    """Fraction of duplicated word n-grams: a cheap detector for repetition collapse."""
+    words = text.split()
+    if len(words) < shingle * 2:
+        return 0.0
+    shingles = [' '.join(words[i:i + shingle]) for i in range(len(words) - shingle + 1)]
+    return 1 - len(set(shingles)) / len(shingles)
+
+
+def qwen3_instruction_post_process(instruction, max_repetition=0.25, min_chars=25):
+    """Extract the leading user query from a forced Qwen3.x generation.
+
+    Returns (instruction, class_num); an empty instruction means nothing usable was
+    found, and the caller should drop the record. class_num records which rule ended the
+    instruction, mirroring the gemma/llama branches below.
+    """
+    class_num = 0
+
+    # 1. Cut where the model stopped being the user.
+    parts = QWEN3_ROLE_MARKERS.split(instruction)
+    if len(parts) > 1:
+        class_num = 1
+    instruction = parts[0]
+    # A generation may open with a stray closing tag before any content.
+    instruction = re.sub(r'^\s*</?think>\s*', '', instruction).strip()
+
+    # 2. Keep only the first query when several are stacked.
+    blocks = re.split(r'\n\s*\n', instruction)
+    if len(blocks) > 1:
+        class_num = class_num or 2
+    instruction = blocks[0].strip()
+
+    # 3. Trim to the last COMPLETE sentence. Without this ~77% of instructions end
+    #    mid-sentence, because the model was still writing when the token budget ran out.
+    if instruction and instruction[-1] in TERMINAL_PUNCTUATION:
+        class_num = class_num or 3
+    else:
+        sentences = QWEN3_SENTENCE_SPLIT.split(instruction)
+        if len(sentences) > 1:
+            instruction = ' '.join(s.strip() for s in sentences[:-1]).strip()
+            class_num = class_num or 4
+        else:
+            # No sentence boundary anywhere: there is no complete query to salvage.
+            return '', 99
+
+    instruction = remove_prefix(instruction)
+
+    if len(instruction) < min_chars:
+        return '', 98
+    if repetition_ratio(instruction) > max_repetition:
+        return '', 97
+
+    return instruction, class_num
+
+
 def instruction_post_process(instruction, model_path):
+    lowered = model_path.lower()
+    if "qwen3.5" in lowered or "qwen3.6" in lowered or "qwen3_5" in lowered:
+        return qwen3_instruction_post_process(instruction)
+
     if "gemma-2" in model_path.lower():
         # remove the prefix
         instruction = remove_prefix(instruction)

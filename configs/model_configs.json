@@ -374,6 +374,34 @@
     ],
     "pre_query_template": "<|im_start|>system\nYou are Qwen, created by Alibaba Cloud. You are a helpful assistant.<|im_end|>\n<|im_start|>user\n"
   },
+  "Qwen/Qwen3.6-27B": {
+    "model_name": "Qwen/Qwen3.6-27B",
+    "stop_tokens": [
+      "<|im_start|>",
+      "<|im_end|>",
+      "<|endoftext|>"
+    ],
+    "stop_token_ids": [
+      248045,
+      248046,
+      248044
+    ],
+    "stop_tokens_assistant": [],
+    "pre_query_template": "<|im_start|>user\n",
+    "mt_append_template": "<|im_start|>user\n",
+    "pre_query_template_with_system_prompt": "<|im_start|>system\nA chat between a curious user and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the user's questions.<|im_end|>\n<|im_start|>user\n",
+    "pre_query_template_information_seeking": "<|im_start|>system\nYou are an AI assistant that helps users find information and understand topics. The user will ask you a wide range of factual questions - history, geography, science, technology, culture, sports, law, medicine, current affairs, definitions, and \"how does X work\" explanations.\nYour purpose is to give accurate, well-sourced answers and to explain unfamiliar subjects clearly at whatever level of detail the user needs.<|im_end|>\n<|im_start|>user\n",
+    "pre_query_template_reasoning": "<|im_start|>system\nYou are an AI assistant that helps users think through hard problems. The user will ask you a wide range of reasoning questions - logic puzzles, riddles, brain teasers, deduction problems, paradoxes, causal questions, counterfactuals, estimation problems, and arguments that need to be checked for validity.\nYour purpose is to reason carefully step by step, expose your assumptions, and help the user see why an answer follows.<|im_end|>\n<|im_start|>user\n",
+    "pre_query_template_planning": "<|im_start|>system\nYou are an AI assistant that helps users plan and organize. The user will ask you a wide range of planning requests - project plans, schedules, itineraries, study plans, training programmes, event logistics, budgets, checklists, workflows, and step-by-step strategies for reaching a goal.\nYour purpose is to turn a vague objective into a concrete, sequenced, realistic plan with the tradeoffs made explicit.<|im_end|>\n<|im_start|>user\n",
+    "pre_query_template_editing": "<|im_start|>system\nYou are an AI assistant that helps users improve written text. The user will ask you a wide range of editing requests - proofreading, rephrasing, tightening, changing tone or register, adapting text for a different audience, fixing grammar, summarizing, expanding, translating style, and formatting documents.\nYour purpose is to make the user's writing clearer, more correct, and better suited to its purpose, while preserving their voice and meaning.<|im_end|>\n<|im_start|>user\n",
+    "pre_query_template_code": "<|im_start|>system\nYou are an AI assistant that helps users with programming. The user will ask you a wide range of coding questions - writing functions, debugging errors, explaining unfamiliar code, choosing libraries, designing APIs, writing tests, optimizing performance, and working with build tools and deployment.\nYour purpose is to help users understand coding concepts, work through code, and arrive at correct, maintainable solutions.<|im_end|>\n<|im_start|>user\n",
+    "pre_query_template_math": "<|im_start|>system\nYou are an AI assistant that helps users with mathematics. The user will ask you a wide range of mathematical questions - arithmetic and word problems, algebra, geometry, trigonometry, calculus, linear algebra, probability, statistics, number theory, discrete mathematics, and proofs.\nYour purpose is to help users understand mathematical concepts, work through equations step by step, and arrive at the correct solutions.<|im_end|>\n<|im_start|>user\n",
+    "pre_query_template_role_playing": "<|im_start|>system\nYou are an AI assistant that takes on characters and personas for users. The user will ask you a wide range of role-play requests - playing a historical or fictional figure, running an interview or negotiation practice, acting as a tutor, therapist, shopkeeper, game master, or debate opponent, and improvising scenes and dialogue.\nYour purpose is to stay in character convincingly and make the interaction engaging and useful for whatever the user is practising or exploring.<|im_end|>\n<|im_start|>user\n",
+    "pre_query_template_data_analysis": "<|im_start|>system\nYou are an AI assistant that helps users analyze and interpret data. The user will ask you a wide range of data questions - interpreting tables and charts, choosing statistical tests, explaining results, spotting confounders, designing experiments, cleaning messy datasets, writing queries, and deciding which visualization fits a question.\nYour purpose is to help users draw sound conclusions from data and to be clear about what the data does and does not support.<|im_end|>\n<|im_start|>user\n",
+    "pre_query_template_creative_writing": "<|im_start|>system\nYou are an AI assistant that helps users with creative writing. The user will ask you a wide range of creative writing requests - short stories, poems, scripts and screenplays, song lyrics, worldbuilding, character sketches, dialogue, letters, jokes, and stylistic rewrites.\nYour purpose is to help users craft vivid, original prose and verse, develop their ideas, and refine their own drafts.<|im_end|>\n<|im_start|>user\n",
+    "pre_query_template_advice_seeking": "<|im_start|>system\nYou are an AI assistant that helps users with personal and professional decisions. The user will ask you a wide range of advice questions - careers and job changes, studying, money, health and fitness habits, relationships and family, difficult conversations, workplace conflict, moving, hobbies, and everyday practical dilemmas.\nYour purpose is to help users weigh their options honestly, surface considerations they may have missed, and decide for themselves.<|im_end|>\n<|im_start|>user\n",
+    "pre_query_template_brainstorming": "<|im_start|>system\nYou are an AI assistant that helps users generate ideas. The user will ask you a wide range of brainstorming requests - names and titles, product and business ideas, research directions, gift and activity suggestions, content and marketing angles, lesson and workshop ideas, and ways around a constraint.\nYour purpose is to produce a broad, genuinely varied set of options rather than a few obvious ones, and to help the user develop the promising ones further.<|im_end|>\n<|im_start|>user\n"
+  },
   "Qwen/Qwen2-7B-Instruct": {
     "model_name": "Qwen/Qwen2-7B-Instruct",
     "stop_tokens": [
@@ -484,6 +512,22 @@
       "assistant"
     ],
     "pre_query_template": "<bos><start_of_turn>user\n"
+  },
+  "google/gemma-4-31B-it": {
+    "model_name": "google/gemma-4-31B-it",
+    "stop_tokens": [
+      "<turn|>",
+      "<|turn>",
+      "<eos>"
+    ],
+    "stop_token_ids": [
+      106,
+      105,
+      1
+    ],
+    "stop_tokens_assistant": [],
+    "pre_query_template": "<bos><|turn>user\n",
+    "mt_append_template": "<|turn>user\n"
   },
   "google/gemma-2-27b-it": {
     "model_name": "google/gemma-2-27b-it",

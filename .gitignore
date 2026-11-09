@@ -168,3 +168,9 @@ data_po_bon/
 data_gemma/
 data_llama3.1/
 data_qwen2.5/
+
+# Slurm job logs (scripts/tamia/*.sbatch writes logs/%x-%j.{out,err})
+logs/
+# gen_dis.py hardcodes its output to ../data/; symlinked onto $SCRATCH (see
+# scripts/tamia/dedup.sbatch) so distance files never land on the /home quota.
+data

@@ -11,7 +11,7 @@ from utils import load_jsonl_to_list, load_dataset_from_file, save_dataset
 from utils import make_api_request_with_retry
 from str_utils import input_difficulty_rating, input_classification, input_quality_rating
 from utils import get_conversation_template
-from lingua import Language, LanguageDetectorBuilder
+from vllm_compat import engine_kwargs
 
 ################
 # Configurations
@@ -47,6 +47,31 @@ def get_args():
     parser.add_argument("--max_tokens", type=int, default=1024)
     parser.add_argument("--temperature", type=float, default=0)
     parser.add_argument("--repetition_penalty", type=float, default=1.0)
+    parser.add_argument("--use_tokenizer_template", action="store_true", dest="tokenizer_template",
+                        help="Build tagging prompts with the tagger's own chat template instead of "
+                             "a FastChat conversation template. Required for model families FastChat "
+                             "does not know, which would otherwise silently get a generic template.")
+    parser.add_argument("--enable_thinking", action="store_true",
+                        help="Let a reasoning tagger emit a <think> block. OFF by default: tagging "
+                             "prefills '{' to force JSON and stops at '}', which a thinking model "
+                             "would never reach. Only meaningful with --use_tokenizer_template.")
+
+    # Engine flags (see vllm_compat.engine_kwargs)
+    parser.add_argument("--enforce_eager", action="store_true",
+                        help="Skip torch.compile and CUDA graph capture.")
+    parser.add_argument("--disable_custom_all_reduce", action="store_true",
+                        help="Disable vLLM's custom all-reduce (multi-GPU stability on some nodes).")
+    parser.add_argument("--language_model_only", action="store_true",
+                        help="For multimodal checkpoints, skip the vision tower. Text-only tagging.")
+    parser.add_argument("--gdn_prefill_backend", type=str, default=None,
+                        choices=["auto", "triton", "flashinfer", "cutedsl"],
+                        help="GatedDeltaNet prefill kernel for Qwen3.5/3.6-style hybrids. "
+                             "'triton' skips the multi-minute JIT of the default FlashInfer kernel.")
+    parser.add_argument("--disable_prefix_caching", action="store_false", dest="enable_prefix_caching",
+                        help="Disable vLLM prefix caching. Required on hybrid mamba/linear-attention "
+                             "models, where enabling it switches the engine onto an experimental "
+                             "cache path for no benefit when prompts do not share long prefixes.")
+    parser.set_defaults(tokenizer_template=False, enable_prefix_caching=True)
 
     return parser.parse_args()
 
@@ -162,6 +187,12 @@ def process_batch(batch, llm, params, mission, tokenizer=None):
                 {"role": "assistant", "content": item['response']},
             ]
             template = tokenizer.apply_chat_template(chat, tokenize=False)
+        elif args.tokenizer_template:
+            chat = [{"role": "user", "content": template_generator(item['instruction'], mission)}]
+            template = tokenizer.apply_chat_template(
+                chat, tokenize=False, add_generation_prompt=True,
+                enable_thinking=args.enable_thinking)
+            template += "{"  # Prefilling for better generation
         else:
             conv = get_conversation_template(MODEL_NAME)
             conv.append_message(conv.roles[0], template_generator(item['instruction'], mission))
@@ -224,6 +255,13 @@ def generate_and_update(dataset, mission, llm, params, api, rm_pipe, rm_pipe_kwa
         num_batches = (len(dataset) + batch_size - 1) // batch_size  # Calculate total number of batches
         print(f"[unitag.py] Total number of batches: {num_batches}")
 
+    # Load the tagger's tokenizer once, not per batch, when it is actually needed.
+    tag_tokenizer = None
+    if not api and mission not in ("reward", "safety") and args.tokenizer_template:
+        tag_tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+    guard_tokenizer = AutoTokenizer.from_pretrained(args.guard_model_path) if (
+        not api and mission == "safety") else None
+
     for i in tqdm(range(num_batches)):
         start_idx = i * batch_size + last_checkpoint_idx
         end_idx = min((i + 1) * batch_size + last_checkpoint_idx, len(dataset))
@@ -234,10 +272,9 @@ def generate_and_update(dataset, mission, llm, params, api, rm_pipe, rm_pipe_kwa
         elif mission == "reward":
             batch = process_batch_with_reward_model(batch, rm_pipe, rm_pipe_kwargs)
         elif mission == "safety":
-            tokenizer = AutoTokenizer.from_pretrained(args.guard_model_path)
-            batch = process_batch(batch, llm, params, mission, tokenizer)
+            batch = process_batch(batch, llm, params, mission, guard_tokenizer)
         else:
-            batch = process_batch(batch, llm, params, mission)
+            batch = process_batch(batch, llm, params, mission, tag_tokenizer)
 
         dataset[start_idx:end_idx] = batch
         # Overwrite the same checkpoint file every checkpoint_every batches
@@ -324,7 +361,8 @@ if __name__ == "__main__":
                             tensor_parallel_size=args.tensor_parallel_size,
                             gpu_memory_utilization=args.gpu_memory_utilization,
                             trust_remote_code=True,
-                            enable_prefix_caching=True,)
+                            enable_prefix_caching=args.enable_prefix_caching,
+                            **engine_kwargs(args))
                 
                 params = SamplingParams(
                             temperature=args.temperature,
@@ -339,8 +377,17 @@ if __name__ == "__main__":
         updated_dataset = generate_and_update(dataset, mission, llm, params, args.api, rm_pipe, rm_pipe_kwargs, batch_size, checkpoint_file, checkpoint_every)
     
     else:
-        # Language Detection using lingua
+        # Language Detection using lingua. Imported here rather than at module scope:
+        # lingua-language-detector has no wheel in some cluster wheelhouses, and an
+        # eager import made every other tagging mission unusable without it.
         print("[unitag.py] Start language detection engine...")
+        try:
+            from lingua import LanguageDetectorBuilder
+        except ImportError as e:
+            raise ImportError(
+                "--tag_mission language requires the lingua-language-detector package "
+                "(`pip install lingua-language-detector`)."
+            ) from e
         detector = LanguageDetectorBuilder.from_all_languages().build()
         for item in tqdm(dataset):
             if item['instruction'] != "":
