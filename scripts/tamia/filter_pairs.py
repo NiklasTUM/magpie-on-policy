@@ -43,6 +43,12 @@ MISSING_CONTEXT = re.compile(
     r"you did not (provide|include|attach)|I need the (actual|specific|real)|"
     r"no (text|code|data|image|table|passage) (was |has been )?provided|"
     r"please (supply|share) the (text|code|data|passage)", re.I)
+# A response that is the model's reasoning instead of an answer. Seen from Kimi K3.1 Pro
+# with thinking disabled (2/30 in the pilot): "I need respond to user ... Should think
+# what best." -- several thousand characters that never reach an answer.
+REASONING_LEAK = re.compile(
+    r"^\s*(I need (to )?respond to|I need to (answer|produce|write) |We need to (answer|respond)|"
+    r"The user (wants|asks|is asking)|User (wants|asks)|Should think|Let me think)", re.I)
 LEAK_MARKERS = ("<think>", "</think>", "<|im_", "<|user|>", "<|assistant|>")
 # Only the opening of the response matters: a long answer may legitimately say
 # "please provide more detail" at the end without the instruction being broken.
@@ -95,6 +101,8 @@ def classify(rec, args):
         return "unterminated"
     if echo_score(ins) >= args.max_echo:
         return "repetition"
+    if REASONING_LEAK.search(res[:RESPONSE_HEAD]):
+        return "reasoning_leak"
     if MISSING_CONTEXT.search(res[:RESPONSE_HEAD]):
         return "dangling_context"
     if args.drop_truncated and rec.get("finish_reason") == "length":
@@ -135,7 +143,12 @@ def main():
             raw = rec.get("raw_instruction")
             if not raw:
                 continue
-            fixed, _ = str_utils.instruction_post_process(raw, "Qwen/Qwen3.6-27B")
+            # Sanitize with the rules for the model that generated the record; files
+            # written before the field existed came from Qwen3.6.
+            generator = ((rec.get("gen_input_configs") or {}).get("input_generator")
+                         or "Qwen/Qwen3.6-27B")
+            fixed, _ = str_utils.instruction_post_process(raw, generator,
+                                                          rec.get("finish_reason"))
             if fixed.strip() and fixed != rec.get("instruction"):
                 rec["instruction"] = fixed
                 resanitized += 1
