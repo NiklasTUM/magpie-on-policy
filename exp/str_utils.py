@@ -276,10 +276,90 @@ def qwen3_instruction_post_process(instruction, max_repetition=0.25, min_chars=2
     return instruction, class_num
 
 
-def instruction_post_process(instruction, model_path):
+_NO_THINK_SUFFIX = {}
+
+
+def close_open_think(prompt, model_path, enable_thinking):
+    """Close the think block a chat template leaves open when thinking should be off.
+
+    Some templates ignore enable_thinking=False and always end the generation prompt with
+    an open '<think>' (GLM-5.3-Flash does). The model's own no-thinking form is set per
+    model in configs/model_configs.json as 'assistant_no_think_suffix'; for GLM that is
+    '</think>', matching how its template renders a past assistant turn without reasoning.
+    Models without the key are returned unchanged.
+    """
+    if enable_thinking:
+        return prompt
+    if model_path not in _NO_THINK_SUFFIX:
+        import json
+        import os
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "configs",
+                            "model_configs.json")
+        with open(path, encoding="utf-8") as f:
+            entry = json.load(f).get(model_path, {})
+        _NO_THINK_SUFFIX[model_path] = entry.get("assistant_no_think_suffix")
+    suffix = _NO_THINK_SUFFIX[model_path]
+    if suffix and prompt.rstrip().endswith("<think>"):
+        return prompt + suffix
+    return prompt
+
+
+# GLM-5.x chat markers. As with Qwen, these can arrive as TEXT inside a completion, where
+# neither stop_token_ids nor skip_special_tokens removes them.
+GLM5_ROLE_MARKERS = re.compile(
+    r'<think>|</think>|<\|assistant\|>|<\|user\|>|<\|system\|>|<\|observation\|>'
+    r'|<\|endoftext\|>|\[gMASK\]|<sop>|<eop>'
+    r'|\n\s*Assistant\s*:', re.IGNORECASE)
+
+
+def glm5_instruction_post_process(instruction, finish_reason=None, max_repetition=0.25,
+                                  min_chars=25):
+    """Sanitize a GLM-5.x pre-query completion. Same return contract as the Qwen3 version.
+
+    Deliberately LIGHTER than qwen3_instruction_post_process. The Qwen rules exist because
+    Qwen3.6 had to be forced past an immediate EOS, so every generation ran to the token
+    cap and had to be cut back. A model that ends the user turn on its own produces a
+    complete instruction, and applying "keep the first paragraph" to it would cut off
+    legitimate multi-part prompts (a request followed by the code or text it is about).
+    So the paragraph/sentence trimming only runs when the generation was truncated
+    (finish_reason == 'length'), or when the model ran on past the user turn without
+    emitting the turn-end token.
+    """
+    class_num = 0
+    parts = GLM5_ROLE_MARKERS.split(instruction)
+    ran_on = len(parts) > 1
+    if ran_on:
+        class_num = 1
+    instruction = parts[0].strip()
+
+    if ran_on or finish_reason == "length":
+        blocks = re.split(r'\n\s*\n', instruction)
+        if len(blocks) > 1 and finish_reason == "length":
+            # Truncated mid-way: keep the complete leading block(s) only.
+            instruction = blocks[0].strip()
+            class_num = class_num or 2
+        if instruction and instruction[-1] not in TERMINAL_PUNCTUATION:
+            sentences = QWEN3_SENTENCE_SPLIT.split(instruction)
+            if len(sentences) > 1:
+                instruction = ' '.join(s.strip() for s in sentences[:-1]).strip()
+                class_num = class_num or 4
+            else:
+                return '', 99
+
+    instruction = remove_prefix(instruction)
+    if len(instruction) < min_chars:
+        return '', 98
+    if repetition_ratio(instruction) > max_repetition:
+        return '', 97
+    return instruction, class_num
+
+
+def instruction_post_process(instruction, model_path, finish_reason=None):
     lowered = model_path.lower()
     if "qwen3.5" in lowered or "qwen3.6" in lowered or "qwen3_5" in lowered:
         return qwen3_instruction_post_process(instruction)
+    if "glm-5" in lowered or "glm5" in lowered:
+        return glm5_instruction_post_process(instruction, finish_reason)
 
     if "gemma-2" in model_path.lower():
         # remove the prefix

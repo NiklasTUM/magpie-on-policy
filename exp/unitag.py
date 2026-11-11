@@ -10,6 +10,7 @@ from transformers import AutoTokenizer, pipeline
 from utils import load_jsonl_to_list, load_dataset_from_file, save_dataset
 from utils import make_api_request_with_retry
 from str_utils import input_difficulty_rating, input_classification, input_quality_rating
+import str_utils
 from utils import get_conversation_template
 from vllm_compat import engine_kwargs
 
@@ -192,6 +193,7 @@ def process_batch(batch, llm, params, mission, tokenizer=None):
             template = tokenizer.apply_chat_template(
                 chat, tokenize=False, add_generation_prompt=True,
                 enable_thinking=args.enable_thinking)
+            template = str_utils.close_open_think(template, MODEL_NAME, args.enable_thinking)
             template += "{"  # Prefilling for better generation
         else:
             conv = get_conversation_template(MODEL_NAME)

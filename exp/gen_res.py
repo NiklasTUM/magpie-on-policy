@@ -9,6 +9,7 @@ from pathlib import Path
 from time import sleep
 from tqdm import tqdm
 from utils import load_dataset_from_file, save_dataset, make_api_request_with_retry, get_conversation_template
+import str_utils
 from vllm_compat import engine_kwargs, sampling_kwargs
 from vllm import LLM, SamplingParams
 from transformers import AutoTokenizer, AutoModelForCausalLM
@@ -215,6 +216,7 @@ def process_batch(batch, llm, params, tokenizer=None):
             template = tokenizer.apply_chat_template(
                 chat, tokenize=False, add_generation_prompt=True,
                 **TEMPLATE_KWARGS)
+            template = str_utils.close_open_think(template, MODEL_NAME, args.enable_thinking)
         prompts.append(template)
     check_prompt_shape(prompts[0])
     if args.engine == "vllm":
