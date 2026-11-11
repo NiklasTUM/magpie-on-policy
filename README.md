@@ -13,6 +13,133 @@ This is the official repository for ICLR 2025 paper "[Alignment Data Synthesis f
 - 🤗 [**Magpie Demo**](https://huggingface.co/spaces/davanstrien/magpie) (Thanks a lot for the implementation from @davanstrien!)
 - 🐦 [**Chat with Magpie**](https://huggingface.co/spaces/flydust/Chat-with-Magpie)
 
+> **This fork** ([NiklasTUM/magpie-on-policy](https://github.com/NiklasTUM/magpie-on-policy)) adds an on-policy Magpie pipeline for **Qwen3.6-27B**. It steers generation toward a broad mix of task categories and filters the output for quality. See [Qwen3.6-27B On-Policy Pipeline](#qwen36-27b-on-policy-pipeline) below. Everything else is upstream Magpie.
+
+## Qwen3.6-27B On-Policy Pipeline
+
+Plain Magpie draws every instruction from one fixed pre-query template, so the data reflects whatever the model most often expects a user to ask. For Qwen3.6-27B that skews heavily toward code. This pipeline adds three things on top of upstream Magpie:
+
+1. **Category steering.** Instructions are spread across 11 task categories, with an unsteered control shard kept for comparison.
+2. **Model-specific generation fixes.** Qwen3.6 tends to end the user turn immediately instead of writing a query, and to repeat itself once forced to write.
+3. **Quality filtering.** Rule-based filters, then near-duplicate removal, then an LLM judge.
+
+### Pipeline at a glance
+
+```
+gen_ins.py ──► gen_res.py ──► unitag.py (category) ──► diversity_report.py
+ (steered        (non-thinking      task_category tags      pass/fail against a
+  instructions)   responses)                                fixed acceptance bar
+                                         │
+                                         ▼
+                  dedup.sbatch (gen_dis.py: embedding + FAISS neighbour distance)
+                                         │
+                                         ▼
+                  filter_pairs.py (rule-based filters + near-duplicate cut)
+                                         │
+                                         ▼
+                  quality_tag.sbatch (unitag.py --tag_mission quality, LLM judge)
+                                         │
+                                         ▼
+                  keep input_quality ∈ {good, excellent}
+```
+
+### 1. Category steering
+
+[`configs/model_configs.json`](configs/model_configs.json) defines a `Qwen/Qwen3.6-27B` entry with one system-prompt template per category: `information_seeking`, `reasoning`, `planning`, `editing`, `code`, `math`, `role_playing`, `data_analysis`, `creative_writing`, `advice_seeking` and `brainstorming`. These are the categories `unitag.py` classifies into.
+
+`gen_ins.py --mix_control_tasks all+free` rotates through every `pre_query_template_*` in that entry plus the bare, unsteered template (`free`) within one run. Each record is tagged with its `control_task`. `--n` is the number of draws per template per round.
+
+### 2. Generation fixes for Qwen3.6
+
+These are set in [`scripts/magpie-qwen3.6-27b.sh`](scripts/magpie-qwen3.6-27b.sh). The comments there document the measurements behind each value.
+
+| Problem | Fix |
+|---|---|
+| Qwen3.6 ends the user turn as its first token for most pre-query prompts, especially with a system prompt, so most instructions come back empty | `--min_tokens 96` suppresses end-of-turn until a real query has been written |
+| Once forced past end-of-turn, the model falls into repetitive loops | `--presence_penalty 1.5`, the remedy recommended on Qwen's model card |
+| Generations run past the first query or are cut mid-sentence | `--sanitize --drop_unsanitizable` trims to the leading complete query and drops records with none (about 14%, so aim about 15% above your target count) |
+| Instruction sampling | temp 1.0 and top_p 1.0, with top_k disabled for full-entropy sampling |
+| Responses | Non-thinking mode with the model card's preset: temp 0.7, top_p 0.8, top_k 20, presence penalty 1.5. Thinking is off because a reasoning trace would use up `max_tokens` before the answer. |
+
+[`exp/vllm_compat.py`](exp/vllm_compat.py) adds the vLLM engine flags needed for this hybrid GatedDeltaNet architecture:
+- `--language_model_only`
+- `--enforce_eager`
+- `--disable_custom_all_reduce`
+- `--gdn_prefill_backend` (defaults to `triton`, which avoids several minutes of FlashInfer JIT compilation per engine build)
+
+Prefix caching stays off.
+
+### 3. Diversity check
+
+[`scripts/tamia/diversity_report.py`](scripts/tamia/diversity_report.py) reads the category-tagged file and reports:
+- the category histogram
+- a cross-tab of steered shard against tagged category, showing whether each nudge landed on its target
+- the steered vs. unsteered code share
+- instruction well-formedness
+
+It then checks a bar fixed in advance. Every threshold can be overridden with a CLI flag.
+
+| Check | Default |
+|---|---|
+| Coding & Debugging share | ≤ 20% |
+| Categories each holding ≥ 3% of the data | ≥ 8 |
+| Mean on-target rate of steered shards | ≥ 40% (chance is about 9%) |
+| Well-formed (ends on a sentence boundary) | ≥ 95% |
+| Median instruction length | ≥ 40 chars |
+
+The driver script runs this report automatically after tagging. A failed bar is reported but does not fail the job.
+
+### 4. Quality filtering
+
+**Near-duplicates.** [`scripts/tamia/dedup.sbatch`](scripts/tamia/dedup.sbatch) runs upstream's `gen_dis.py` (all-mpnet-base-v2 embeddings with a FAISS index) and writes each instruction's minimum neighbour distance to `data/*_distance.jsonl`. It adds the `conversation_id` field that `gen_dis.py` expects.
+
+**Rule-based filters.** [`scripts/tamia/filter_pairs.py`](scripts/tamia/filter_pairs.py) re-applies the current sanitizer to `raw_instruction` and drops pairs with any of these problems:
+
+| Reason | Rule |
+|---|---|
+| `dangling_context` | The instruction refers to a snippet, image or table that was never provided, so the response asks for it. Detected by a regex on the first 600 chars of the response. |
+| `repetition` | A 3-word phrase recurs at least `--max_echo` times (default 3) within 25 words of itself |
+| `token_leakage` | Literal chat or think tokens appear in the instruction |
+| `short` / `unterminated` | Instruction shorter than `--min_chars` (default 25), or not ending in terminal punctuation |
+| `empty_instruction` / `empty_response` | Empty fields |
+| `truncated_response` | Response hit `max_tokens` (only with `--drop_truncated`) |
+| `near_duplicate` | Neighbour distance below `--min_distance` (default 0.05, upstream's threshold), when `--distance_file` is given |
+
+```bash
+python scripts/tamia/filter_pairs.py IN.json --sweep                       # inspect thresholds, write nothing
+python scripts/tamia/filter_pairs.py IN.json -o OUT.json \
+    --distance_file data/<name>_distance.jsonl --drop_truncated
+```
+
+**LLM judge.** [`scripts/tamia/quality_tag.sbatch`](scripts/tamia/quality_tag.sbatch) runs `unitag.py --tag_mission quality`, which rates instructions from very poor to excellent. It mainly targets the mixed cases the rules deliberately leave in, such as instructions with a phrase repeated exactly twice. Set `MODEL=` to use a judge from a different model family, for example `google/gemma-4-31B-it`, which also has a config entry. Each judge writes to its own `*_judge-<model>_quality.json`, so verdicts from several judges can be compared. As upstream does, keep records with `input_quality` of `good` or `excellent`.
+
+### Running it
+
+The scripts under [`scripts/tamia/`](scripts/tamia/) target a Slurm cluster with 4×H100 nodes and offline compute nodes. Account, module and cache paths are set for that cluster, so adapt them to yours.
+
+```bash
+# 0. One-time environment setup on a login node with internet (vLLM 0.25, torch 2.11, transformers 5.x).
+#    Upstream's requirements.txt pins vllm==0.6.5, which cannot run Qwen3.6.
+bash scripts/tamia/build_env.sh
+
+# 1. Generate instructions, responses and category tags, then print the diversity report
+SMOKE=1 sbatch --time=00:30:00 scripts/tamia/magpie_qwen36.sbatch    # 240-pair smoke test
+sbatch scripts/tamia/magpie_qwen36.sbatch                            # 10k prompts (TOTAL_PROMPTS=...)
+STAGE=res TIMESTAMP=<ts> sbatch scripts/tamia/magpie_qwen36.sbatch   # resume a single stage
+
+# 2. Near-duplicate distances
+INPUT=$SCRATCH/magpie-data/<job>/Magpie_..._ins_res_category.json sbatch scripts/tamia/dedup.sbatch
+
+# 3. Rule-based filters plus the near-duplicate cut
+python scripts/tamia/filter_pairs.py <..._category.json> -o <..._clean.json> --distance_file data/<..._distance.jsonl>
+
+# 4. LLM judge
+INPUT=<..._clean.json> sbatch scripts/tamia/quality_tag.sbatch
+INPUT=<..._clean.json> MODEL=google/gemma-4-31B-it sbatch scripts/tamia/quality_tag.sbatch
+```
+
+Without Slurm, run `cd scripts && bash magpie-qwen3.6-27b.sh Qwen/Qwen3.6-27B 10000` directly. It must be run from `scripts/`, and every knob is exposed as an environment variable (`STAGE`, `N`, `INS_MIN_TOKENS`, `CONTROL_TASKS`, …). Outputs go to `$OUTPUT_FOLDER`, which defaults to `$SCRATCH/magpie-data`.
+
 ## 🐦 News
 - [2025/01/22] Magpie paper is accepted by ICLR 2025! 
 - [2025/01/09] Magpie Reasoning V2 dataset is out! [250K]([https://huggiK](https://huggingface.co/collections/Magpie-Align/magpie-reasoning-datasets-67790a13b91035bc42693885)) from Llama, Skywork-o1 and QwQ! This time, we focus on CoT 🤯
